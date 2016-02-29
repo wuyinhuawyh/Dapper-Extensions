@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Data.SqlClient;
 using System.Dynamic;
 using System.Linq;
 using System.Text;
@@ -59,10 +60,45 @@ namespace DapperExtensions
                     }
                 }
             }
-
-            string sql = SqlGenerator.Insert(classMap);
-
-            connection.Execute(sql, entities, transaction, commandTimeout, CommandType.Text);
+            if (connection is SqlConnection)
+            {
+                #region 使用SqlBulkCopy批量插入 效率高 只正对server sql 其他db未研究
+                string tableName = SqlGenerator.GetTableName(classMap);
+                var columns =
+                    classMap.Properties.Where(p => !(p.Ignored || p.IsReadOnly || p.KeyType == KeyType.Identity));
+                if (!columns.Any())
+                {
+                    throw new ArgumentException("No columns were mapped.");
+                }
+                // var columnNames = columns.Select(p => SqlGenerator.GetColumnName(classMap, p, false));
+                DataTable dt = new DataTable();
+                SqlBulkCopy bulkCopy = new SqlBulkCopy((SqlConnection) connection);
+                bulkCopy.DestinationTableName = tableName;
+                foreach (var column in columns)
+                {
+                    dt.Columns.Add(column.ColumnName, column.PropertyInfo.PropertyType);
+                    //前面的参数是本地的临时Table列名，后面的参数是数据库的列名。两个名称不需要相同
+                    bulkCopy.ColumnMappings.Add(column.ColumnName, column.ColumnName);
+                }
+                foreach (var entity in entities)
+                {
+                    ArrayList tempList = new ArrayList();
+                    foreach (var column in columns)
+                    {
+                        object obj = column.PropertyInfo.GetValue(entity, null);
+                        tempList.Add(obj);
+                    }
+                    object[] array = tempList.ToArray();
+                    dt.LoadDataRow(array, true);
+                }
+                bulkCopy.WriteToServer(dt);
+                #endregion
+            }
+            else
+            {
+                string sql = SqlGenerator.Insert(classMap);
+                connection.Execute(sql, entities, transaction, commandTimeout, CommandType.Text);
+            }
         }
 
         public dynamic Insert<T>(IDbConnection connection, T entity, IDbTransaction transaction, int? commandTimeout) where T : class
